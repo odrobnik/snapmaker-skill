@@ -11,6 +11,52 @@ import sys
 import os
 from pathlib import Path
 
+
+def _find_workspace_root() -> Path:
+    # Prefer CWD if it looks like a workspace
+    cwd = Path.cwd()
+    if (cwd / "skills").is_dir():
+        return cwd
+
+    d = Path(__file__).resolve().parent
+    for _ in range(10):
+        if (d / "skills").is_dir():
+            return d
+        if d == d.parent:
+            break
+        d = d.parent
+    return Path.cwd()
+
+
+def _default_log_dir() -> Path:
+    """Default log dir (portable): <workspace>/snapmaker/logs.
+
+    Falls back to ~/.openclaw/snapmaker/logs if no workspace root is found.
+    """
+    ws = _find_workspace_root()
+    candidate = ws / "snapmaker" / "logs"
+    if candidate.parent.exists():
+        return candidate
+    return Path.home() / ".openclaw" / "snapmaker" / "logs"
+
+
+def _open_safe_log_file(value: str):
+    """Open a log file safely.
+
+    To avoid arbitrary file writes, --log only accepts a *filename* (no paths).
+    The file is created under the default log dir.
+    """
+    if not value:
+        raise ValueError("--log requires a filename")
+
+    name = Path(value)
+    if name.is_absolute() or len(name.parts) != 1 or "/" in value or "\\" in value:
+        raise ValueError("--log must be a filename only (no paths).")
+
+    log_dir = _default_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return open(log_dir / name.name, "a", encoding="utf-8")
+
 # Import the SnapmakerAPI from snapmaker.py
 sys.path.insert(0, str(Path(__file__).parent))
 from snapmaker import SnapmakerAPI, format_time
@@ -116,7 +162,7 @@ Event Format:
 Examples:
   %(prog)s                    # Monitor with default settings
   %(prog)s --interval 10      # Check every 10 seconds
-  %(prog)s --log events.log   # Write events to file
+  %(prog)s --log events.log   # Write events to <workspace>/snapmaker/logs/events.log
         """
     )
     
@@ -137,7 +183,11 @@ Examples:
     # Setup logging
     log_file = None
     if args.log:
-        log_file = open(args.log, 'a')
+        try:
+            log_file = _open_safe_log_file(args.log)
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(2)
         
         def log_callback(event):
             timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
