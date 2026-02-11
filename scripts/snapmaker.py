@@ -33,12 +33,56 @@ def _find_workspace_root():
     return Path.cwd()
 
 
+def _skill_root() -> Path:
+    """Find the skill folder containing SKILL.md."""
+    cwd = Path.cwd()
+    if (cwd / "SKILL.md").exists():
+        return cwd
+
+    d = Path(__file__).resolve().parent
+    for _ in range(5):
+        if (d / "SKILL.md").exists():
+            return d
+        if d == d.parent:
+            break
+        d = d.parent
+    return Path(__file__).resolve().parents[1]
+
+
+def _default_config_path() -> Path:
+    """Resolve config in a portable way.
+
+    Priority:
+      1) SNAPMAKER_CONFIG env var
+      2) <skill>/config.json
+      3) <workspace>/snapmaker/config.json (legacy Oliver setup)
+    """
+    env = os.environ.get("SNAPMAKER_CONFIG")
+    if env:
+        return Path(env).expanduser()
+
+    skill_cfg = _skill_root() / "config.json"
+    if skill_cfg.exists():
+        return skill_cfg
+
+    legacy = _find_workspace_root() / "snapmaker" / "config.json"
+    if legacy.exists():
+        return legacy
+
+    return skill_cfg
+
+
 class SnapmakerAPI:
     def __init__(self, config_path: str = None):
-        if config_path is None:
-            config_path = str(_find_workspace_root() / "snapmaker" / "config.json")
-        
-        with open(config_path, 'r') as f:
+        cfg_path = Path(config_path).expanduser() if config_path else _default_config_path()
+
+        if not cfg_path.exists():
+            raise SystemExit(
+                "Missing config.json. Create one next to SKILL.md (start from config.json.example), "
+                "or set SNAPMAKER_CONFIG to an absolute path."
+            )
+
+        with open(cfg_path, 'r') as f:
             config = json.load(f)
         
         self.ip = config['ip']

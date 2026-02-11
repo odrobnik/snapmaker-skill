@@ -1,2 +1,7 @@
-references/
-README.md
+.git/
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+.env
+config.json

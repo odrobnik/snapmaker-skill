@@ -2,7 +2,7 @@
 name: snapmaker
 description: "Control and monitor Snapmaker 2.0 3D printers via their HTTP API. Status, job management, progress watching, and event monitoring."
 summary: "Snapmaker 2.0 3D printer control: status, jobs, monitoring."
-version: 1.0.0
+version: 1.0.1
 homepage: https://github.com/odrobnik/snapmaker-skill
 metadata:
   {
@@ -28,7 +28,13 @@ Control and monitor Snapmaker 2.0 3D printers via their HTTP API.
 
 ## Configuration
 
-Config stored in `~/clawd/snapmaker/config.json`:
+Preferred: create `config.json` next to `SKILL.md` (gitignored). Start from `config.json.example`.
+
+Alternative:
+- set `SNAPMAKER_CONFIG=/absolute/path/to/config.json`
+- legacy fallback (Oliver setup): `~/clawd/snapmaker/config.json`
+
+Config format:
 
 ```json
 {
