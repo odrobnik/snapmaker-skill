@@ -7,16 +7,30 @@ Provides safe control of Snapmaker 2.0 3D printers
 import argparse
 import json
 import os
+import socket
 import sys
 import time
 from pathlib import Path
 import requests
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
+
+def _find_workspace_root():
+    """Walk up from script location to find workspace root (parent of 'skills/')."""
+    env = os.environ.get("SNAPMAKER_WORKSPACE")
+    if env:
+        return Path(env)
+    d = Path(__file__).resolve().parent
+    for _ in range(6):
+        if (d / "skills").is_dir() and d != d.parent:
+            return d
+        d = d.parent
+    return Path.cwd()
+
 
 class SnapmakerAPI:
     def __init__(self, config_path: str = None):
         if config_path is None:
-            config_path = os.path.expanduser("~/clawd/snapmaker/config.json")
+            config_path = str(_find_workspace_root() / "snapmaker" / "config.json")
         
         with open(config_path, 'r') as f:
             config = json.load(f)
@@ -25,9 +39,18 @@ class SnapmakerAPI:
         self.token = config['token']
         self.port = config.get('port', 8080)
         self.base_url = f"http://{self.ip}:{self.port}/api/v1"
+        self._connected = False
     
     def _request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         """Make API request with token"""
+        # Auto-connect on first request (except connect itself)
+        if not self._connected and endpoint != 'connect':
+            try:
+                self.connect()
+            except Exception:
+                # If connect fails, still try the request (might be already connected)
+                pass
+        
         url = f"{self.base_url}/{endpoint}"
         params = kwargs.get('params', {})
         params['token'] = self.token
@@ -44,6 +67,7 @@ class SnapmakerAPI:
     def connect(self) -> Dict[str, Any]:
         """Establish connection to printer"""
         response = self._request('POST', 'connect')
+        self._connected = True
         return response.json()
     
     def get_status(self) -> Dict[str, Any]:
@@ -315,6 +339,134 @@ def cmd_watch(api: SnapmakerAPI, args):
         print("\n\nStopped watching")
 
 
+def discover_printers(timeout: float = 3.0, retries: int = 3,
+                      target: str = None) -> List[Dict[str, str]]:
+    """Discover Snapmaker printers via UDP broadcast on port 20054.
+
+    Sends the magic 'discover' packet and parses replies like:
+      Snapmaker@192.168.0.32|model:Snapmaker 2 Model A350|status:RUNNING
+
+    Args:
+        timeout: seconds to wait for each attempt
+        retries: number of broadcast attempts
+        target: optional IP to probe directly (unicast) instead of broadcast
+
+    Returns:
+        list of dicts with keys: ip, model, status
+    """
+    DISCOVER_PORT = 20054
+    found: Dict[str, Dict[str, str]] = {}  # keyed by IP to dedupe
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.settimeout(timeout)
+
+    try:
+        for _ in range(retries):
+            if target:
+                sock.sendto(b'discover', (target, DISCOVER_PORT))
+            else:
+                sock.sendto(b'discover', ('255.255.255.255', DISCOVER_PORT))
+
+            # Collect all replies until timeout
+            while True:
+                try:
+                    data, addr = sock.recvfrom(1024)
+                    reply = data.decode('utf-8', errors='replace').strip("'\"")
+                    # Parse: Snapmaker@IP|model:...|status:...
+                    parts = reply.split('|')
+                    info: Dict[str, str] = {}
+                    if '@' in parts[0]:
+                        info['ip'] = parts[0].split('@', 1)[1]
+                    else:
+                        info['ip'] = addr[0]
+                    for part in parts[1:]:
+                        if ':' in part:
+                            key, val = part.split(':', 1)
+                            info[key.strip().lower()] = val.strip()
+                    found[info['ip']] = info
+                except socket.timeout:
+                    break
+
+            if found:
+                break  # got results, stop retrying
+    finally:
+        sock.close()
+
+    return list(found.values())
+
+
+def cmd_discover(api_unused, args):
+    """Discover Snapmaker printers on the network.
+
+    Uses UDP broadcast (port 20054). No authentication required.
+    Note: broadcast only works on the same subnet as the printer.
+    Use --target IP to probe a specific address across subnets.
+    """
+    target = getattr(args, 'target', None)
+    timeout = getattr(args, 'timeout', 3.0)
+    retries = getattr(args, 'retries', 3)
+
+    if target:
+        print(f"Probing {target}:{20054} (UDP discover)...")
+    else:
+        print("Broadcasting UDP discover on port 20054...")
+        print("(Only works on the same subnet as the printer)\n")
+
+    printers = discover_printers(timeout=timeout, retries=retries, target=target)
+
+    if not printers:
+        # If no UDP reply and we have a config, try HTTP probe as fallback
+        config_path = getattr(args, 'config', None)
+        if config_path is None:
+            config_path = str(_find_workspace_root() / "snapmaker" / "config.json")
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            ip = config.get('ip', '')
+            port = config.get('port', 8080)
+            probe_ip = target or ip
+        if probe_ip:
+                print(f"No UDP reply. Trying HTTP probe on {probe_ip}:{port}...")
+                try:
+                    r = requests.get(
+                        f"http://{probe_ip}:{port}/api/v1/status",
+                        params={'token': config.get('token', '')},
+                        timeout=5,
+                    )
+                    if r.ok:
+                        status = r.json()
+                        printers = [{
+                            'ip': probe_ip,
+                            'model': 'Snapmaker 2.0 (HTTP)',
+                            'status': status.get('status', 'UNKNOWN'),
+                        }]
+                except Exception:
+                    pass
+
+    if not printers:
+        print("No Snapmaker printers found.")
+        print("\nTips:")
+        print("  • Make sure you're on the same subnet as the printer")
+        print("  • Use --target IP to probe a known address directly")
+        print("  • Check that the printer is powered on and connected to WiFi")
+        sys.exit(1)
+
+    if args.json:
+        print(json.dumps(printers, indent=2))
+    else:
+        for p in printers:
+            print(f"  📍 {p.get('ip', '?')}")
+            if p.get('model'):
+                print(f"     Model:  {p['model']}")
+            if p.get('status'):
+                print(f"     Status: {p['status']}")
+            print()
+
+    return printers
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Snapmaker 2.0 API Control',
@@ -336,6 +488,14 @@ Examples:
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
     subparsers.required = True
     
+    # Discover command
+    discover_parser = subparsers.add_parser('discover', help='Find Snapmaker printers on the network')
+    discover_parser.add_argument('--target', help='Probe a specific IP instead of broadcasting')
+    discover_parser.add_argument('--timeout', type=float, default=3.0, help='Timeout per attempt (default: 3s)')
+    discover_parser.add_argument('--retries', type=int, default=3, help='Number of attempts (default: 3)')
+    discover_parser.add_argument('--json', action='store_true', help='Output as JSON')
+    discover_parser.set_defaults(func=cmd_discover)
+
     # Status command
     status_parser = subparsers.add_parser('status', help='Get printer status')
     status_parser.add_argument('--json', action='store_true', help='Output as JSON')
@@ -376,12 +536,14 @@ Examples:
     
     args = parser.parse_args()
     
-    # Initialize API
-    try:
-        api = SnapmakerAPI(args.config)
-    except Exception as e:
-        print(f"Error loading config: {e}", file=sys.stderr)
-        sys.exit(1)
+    # Initialize API (discover doesn't require it)
+    api = None
+    if args.command != 'discover':
+        try:
+            api = SnapmakerAPI(args.config)
+        except Exception as e:
+            print(f"Error loading config: {e}", file=sys.stderr)
+            sys.exit(1)
     
     # Execute command
     args.func(api, args)
