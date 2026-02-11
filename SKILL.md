@@ -47,6 +47,22 @@ Look for the `server.token` field (second "token" in the file).
 
 ## Usage
 
+### Discovery
+
+```bash
+# Find Snapmaker printers on the local network (UDP broadcast, port 20054)
+python3 scripts/snapmaker.py discover
+
+# Probe a specific IP (useful across subnets)
+python3 scripts/snapmaker.py discover --target 192.168.0.32
+
+# JSON output
+python3 scripts/snapmaker.py discover --json
+```
+
+Discovery uses the Snapmaker UDP broadcast protocol (no auth required).
+Falls back to HTTP probe using config if UDP gets no reply (e.g. different subnet).
+
 ### Basic Commands
 
 ```bash
@@ -161,6 +177,13 @@ python3 scripts/snapmaker.py status --json | jq '{nozzle: .nozzleTemperature1, b
 ```
 
 ## Troubleshooting
+
+**"Machine is not connected yet" (401 error):**
+- The API requires calling `/api/v1/connect` first before any status queries
+- Example: `curl -X POST "http://192.168.0.32:8080/api/v1/connect?token=YOUR_TOKEN"`
+- The Python script handles this automatically on first request
+- Connection establishes a session that persists until the printer is powered off
+- If using raw curl commands, always call connect first
 
 **Connection refused:**
 - Verify printer IP: `ping 192.168.0.32`
