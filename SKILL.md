@@ -1,8 +1,8 @@
 ---
-name: snapmaker
+name: snapmaker-2
 description: "Control and monitor Snapmaker 2.0 3D printers via their HTTP API. Status, job management, progress watching, and event monitoring."
 summary: "Snapmaker 2.0 3D printer control: status, jobs, monitoring."
-version: 1.0.2
+version: 1.1.1
 homepage: https://github.com/odrobnik/snapmaker-skill
 metadata:
   {
@@ -28,11 +28,8 @@ Control and monitor Snapmaker 2.0 3D printers via their HTTP API.
 
 ## Configuration
 
-Preferred: create `config.json` next to `SKILL.md` (gitignored). Start from `config.json.example`.
-
-Alternative:
-- set `SNAPMAKER_CONFIG=/absolute/path/to/config.json`
-- legacy fallback (Oliver setup): `~/clawd/snapmaker/config.json`
+Create `config.json` in your workspace's `snapmaker/` folder (e.g. `~/clawd/snapmaker/config.json`).
+Start from `config.json.example`.
 
 Config format:
 
@@ -45,11 +42,8 @@ Config format:
 ```
 
 **Finding your token:**
-- macOS: `~/Library/Application Support/snapmaker-luban/machine.json`
-- Windows: `%appdata%\snapmaker-luban\machine.json`
-- Linux: `~/.config/snapmaker-luban/machine.json`
-
-Look for the `server.token` field (second "token" in the file).
+Open the Snapmaker Luban app, connect to your printer, and find the token
+in the connection settings. Copy it into your `config.json`.
 
 ## Usage
 
@@ -198,8 +192,8 @@ python3 scripts/snapmaker.py status --json | jq '{nozzle: .nozzleTemperature1, b
 
 **Invalid token:**
 - Reconnect Luban to the printer (accept on touchscreen)
-- Extract new token from `machine.json`
-- Update `~/clawd/snapmaker/config.json`
+- Copy the new token from Luban's connection settings
+- Update your `config.json`
 
 **Can't send file:**
 - Check if printer is busy: `python3 scripts/snapmaker.py status`

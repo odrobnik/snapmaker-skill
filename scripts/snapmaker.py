@@ -50,26 +50,21 @@ def _skill_root() -> Path:
 
 
 def _default_config_path() -> Path:
-    """Resolve config in a portable way.
+    """Resolve config from workspace only.
 
     Priority:
-      1) SNAPMAKER_CONFIG env var
-      2) <skill>/config.json
-      3) <workspace>/snapmaker/config.json (legacy Oliver setup)
+      1) <workspace>/snapmaker/config.json
+      2) <skill>/config.json (fallback)
     """
-    env = os.environ.get("SNAPMAKER_CONFIG")
-    if env:
-        return Path(env).expanduser()
+    ws_cfg = _find_workspace_root() / "snapmaker" / "config.json"
+    if ws_cfg.exists():
+        return ws_cfg
 
     skill_cfg = _skill_root() / "config.json"
     if skill_cfg.exists():
         return skill_cfg
 
-    legacy = _find_workspace_root() / "snapmaker" / "config.json"
-    if legacy.exists():
-        return legacy
-
-    return skill_cfg
+    return ws_cfg
 
 
 class SnapmakerAPI:
@@ -78,8 +73,7 @@ class SnapmakerAPI:
 
         if not cfg_path.exists():
             raise SystemExit(
-                "Missing config.json. Create one next to SKILL.md (start from config.json.example), "
-                "or set SNAPMAKER_CONFIG to an absolute path."
+                "Missing config.json. Create one in workspace/snapmaker/ (start from config.json.example)."
             )
 
         with open(cfg_path, 'r') as f:
@@ -102,6 +96,9 @@ class SnapmakerAPI:
                 pass
         
         url = f"{self.base_url}/{endpoint}"
+        # Note: Snapmaker firmware API requires token as query parameter.
+        # The device does not support Authorization headers.
+        # This is a LAN-only API (no internet exposure).
         params = kwargs.get('params', {})
         params['token'] = self.token
         kwargs['params'] = params
@@ -130,16 +127,44 @@ class SnapmakerAPI:
         status = self.get_status()
         return status.get('status') in ['RUNNING', 'PAUSED']
     
+    # Allowed file extensions for 3D printing
+    ALLOWED_EXTENSIONS = {'.gcode', '.nc', '.cnc', '.stl', '.snap3dp', '.snapcnc', '.snaplaser'}
+
     def send_file(self, file_path: str, print_type: str = '3dp') -> Dict[str, Any]:
-        """Send a file to the printer (but don't start printing)"""
-        if not os.path.exists(file_path):
+        """Send a 3D printing file to the printer (but don't start printing).
+
+        Only allows known 3D printing file types. File must be under the
+        workspace directory or /tmp.
+        """
+        p = Path(file_path).expanduser().resolve()
+
+        if not p.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
-        
+
+        # Validate file extension
+        if p.suffix.lower() not in self.ALLOWED_EXTENSIONS:
+            raise ValueError(
+                f"File type '{p.suffix}' not allowed. "
+                f"Supported: {', '.join(sorted(self.ALLOWED_EXTENSIONS))}"
+            )
+
+        # Sandbox: only allow files from workspace or /tmp
+        allowed_roots = [
+            _find_workspace_root().resolve(),
+            Path("/tmp").resolve(),
+            Path(os.environ.get("TMPDIR", "/tmp")).resolve(),
+        ]
+        if not any(p == root or str(p).startswith(str(root) + "/") for root in allowed_roots):
+            raise ValueError(
+                f"File '{file_path}' is outside allowed directories. "
+                f"Only files under workspace or /tmp can be sent."
+            )
+
         # Safety check: don't interfere with active print
         if self.is_printing():
             raise RuntimeError("Printer is currently printing. Cannot send file.")
-        
-        with open(file_path, 'rb') as f:
+
+        with open(p, 'rb') as f:
             files = {'file': f}
             params = {'type': print_type}
             response = self._request('POST', 'prepare_print', params=params, files=files)
@@ -274,36 +299,33 @@ def cmd_jobs(api: SnapmakerAPI, args):
 def cmd_send(api: SnapmakerAPI, args):
     """Handle send command"""
     file_path = args.file
-    
+
     if not os.path.exists(file_path):
         print(f"Error: File not found: {file_path}", file=sys.stderr)
         sys.exit(1)
-    
-    # Check if printer is busy
+
+    # Check if printer is busy (no override)
     if api.is_printing():
         print("Error: Printer is currently printing. Cannot send file.", file=sys.stderr)
-        print("Use --force to override (not recommended)", file=sys.stderr)
-        if not args.force:
-            sys.exit(1)
-    
+        sys.exit(1)
+
     print(f"Sending file: {file_path}")
     try:
         result = api.send_file(file_path)
         print("✓ File sent successfully")
-        
+
         if args.start:
-            if not args.yes:
-                print("\nThis will start printing immediately!")
-                response = input("Continue? (yes/no): ")
-                if response.lower() not in ['yes', 'y']:
-                    print("Aborted")
-                    sys.exit(0)
-            
+            print("\nThis will start printing immediately!")
+            response = input("Continue? (yes/no): ")
+            if response.lower() not in ['yes', 'y']:
+                print("Aborted")
+                sys.exit(0)
+
             api.start_print()
             print("✓ Print started")
         else:
             print("File prepared. Use 'snapmaker.py start' to begin printing.")
-    
+
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -311,13 +333,6 @@ def cmd_send(api: SnapmakerAPI, args):
 
 def cmd_pause(api: SnapmakerAPI, args):
     """Handle pause command"""
-    if not args.yes:
-        print("This will pause the current print job.")
-        response = input("Continue? (yes/no): ")
-        if response.lower() not in ['yes', 'y']:
-            print("Aborted")
-            sys.exit(0)
-    
     try:
         api.pause_print()
         print("✓ Print paused")
@@ -328,13 +343,6 @@ def cmd_pause(api: SnapmakerAPI, args):
 
 def cmd_resume(api: SnapmakerAPI, args):
     """Handle resume command"""
-    if not args.yes:
-        print("This will resume the paused print job.")
-        response = input("Continue? (yes/no): ")
-        if response.lower() not in ['yes', 'y']:
-            print("Aborted")
-            sys.exit(0)
-    
     try:
         api.resume_print()
         print("✓ Print resumed")
@@ -345,14 +353,6 @@ def cmd_resume(api: SnapmakerAPI, args):
 
 def cmd_stop(api: SnapmakerAPI, args):
     """Handle stop command"""
-    if not args.yes:
-        print("⚠️  WARNING: This will STOP and CANCEL the current print job!")
-        print("This action cannot be undone.")
-        response = input("Are you sure? (yes/no): ")
-        if response.lower() not in ['yes', 'y']:
-            print("Aborted")
-            sys.exit(0)
-    
     try:
         api.stop_print()
         print("✓ Print stopped")
@@ -526,14 +526,14 @@ Examples:
   %(prog)s status              # Get current printer status
   %(prog)s watch               # Watch print progress
   %(prog)s send file.gcode     # Send file (don't start)
-  %(prog)s send file.gcode --start --yes  # Send and start immediately
-  %(prog)s pause --yes         # Pause print
-  %(prog)s resume --yes        # Resume print
-  %(prog)s stop --yes          # Stop/cancel print
+  %(prog)s send file.gcode --start  # Send and start (confirms interactively)
+  %(prog)s pause               # Pause print
+  %(prog)s resume              # Resume print
+  %(prog)s stop                # Stop/cancel print
         """
     )
     
-    parser.add_argument('--config', help='Path to config file')
+    parser.add_argument('--config', help='Path to config.json (default: workspace/snapmaker/config.json)')
     
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
     subparsers.required = True
@@ -558,25 +558,20 @@ Examples:
     
     # Send command
     send_parser = subparsers.add_parser('send', help='Send file to printer')
-    send_parser.add_argument('file', help='Path to .gcode file')
-    send_parser.add_argument('--start', action='store_true', help='Start printing immediately')
-    send_parser.add_argument('--yes', action='store_true', help='Skip confirmation')
-    send_parser.add_argument('--force', action='store_true', help='Force send even if printing (dangerous!)')
+    send_parser.add_argument('file', help='Path to 3D printing file (.gcode, .nc, .cnc, .stl)')
+    send_parser.add_argument('--start', action='store_true', help='Start printing immediately (interactive confirmation)')
     send_parser.set_defaults(func=cmd_send)
-    
+
     # Pause command
     pause_parser = subparsers.add_parser('pause', help='Pause current print')
-    pause_parser.add_argument('--yes', action='store_true', help='Skip confirmation')
     pause_parser.set_defaults(func=cmd_pause)
-    
+
     # Resume command
     resume_parser = subparsers.add_parser('resume', help='Resume paused print')
-    resume_parser.add_argument('--yes', action='store_true', help='Skip confirmation')
     resume_parser.set_defaults(func=cmd_resume)
-    
+
     # Stop command
     stop_parser = subparsers.add_parser('stop', help='Stop/cancel current print')
-    stop_parser.add_argument('--yes', action='store_true', help='Skip confirmation (DANGEROUS!)')
     stop_parser.set_defaults(func=cmd_stop)
     
     # Watch command
