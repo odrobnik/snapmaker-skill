@@ -2,7 +2,7 @@
 name: snapmaker-2
 description: "Control and monitor Snapmaker 2.0 3D printers via their HTTP API. Status, job management, progress watching, and event monitoring."
 summary: "Snapmaker 2.0 3D printer control: status, jobs, monitoring."
-version: 1.2.0
+version: 1.2.1
 homepage: https://github.com/odrobnik/snapmaker-skill
 metadata:
   {
