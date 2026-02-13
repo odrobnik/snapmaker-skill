@@ -22,7 +22,7 @@ python3 scripts/snapmaker.py send file.gcode --start --yes
 
 See [SKILL.md](SKILL.md) for full documentation.
 
-## Links
+## Documentation
 
-- **GitHub**: https://github.com/odrobnik/snapmaker-skill
-- **ClawHub**: https://www.clawhub.com/skills/snapmaker-2
+- [SKILL.md](SKILL.md) — agent-facing reference (commands, behavior, limitations)
+- [ClawHub](https://www.clawhub.com/skills/snapmaker-2) — install via ClawHub registry
